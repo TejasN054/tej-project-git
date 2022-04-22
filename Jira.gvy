@@ -24,6 +24,7 @@ IssueManager issueManager = ComponentAccessor.getIssueManager();
 Issue immutableIssue = event.issue as Issue;
 MutableIssue issue = issueManager.getIssueObject(immutableIssue.getKey());
 
+def customersDef = ComponentAccessor.getCustomFieldManager().getCustomFieldObjectByName("Customer(s)");
 def documentationDef = ComponentAccessor.getCustomFieldManager().getCustomFieldObjectByName("Documentation");
 def impactAreasDef = ComponentAccessor.getCustomFieldManager().getCustomFieldObjectByName("Impact Areas");
 def epicLinkDef = ComponentAccessor.getCustomFieldManager().getCustomFieldObjectByName("Epic Link");
@@ -93,11 +94,13 @@ if (isStory || isBug) {
     if (isStory || isBugInEpic) {
         //roll up Documentation to parent Epic
         //roll up Impact Areas to parent Epic
+        //roll up Customer(s) to parent epic
         def epicLinkVal = issue.getCustomFieldValue(epicLinkDef);
 
         if (epicLinkVal != null) {
             def epicLearnedDocumentation = false;
             def epicLearnedImpactAreas = false;
+            def epicLearnedCustomers = false;
 
             String epicKey = epicLinkVal;
             log.error(" epic key: " + epicKey);
@@ -125,6 +128,19 @@ if (isStory || isBug) {
                     if (obj instanceof Option) {
                         Option opt = (Option) obj;
                         epicImpactAreas.add(opt);
+                    }
+                }
+            }
+
+            //collect the customers already on the parent epic
+            Set<Option> epicCustomers = new HashSet<Option>();
+            Object customersValue = epic.getCustomFieldValue(customersDef);
+            if (customersValue instanceof Collection) {
+                Collection<Option> coll = (Collection)customersValue;
+                for (Object obj : coll) {
+                    if (obj instanceof Option) {
+                        Option opt = (Option) obj;
+                        epicCustomers.add(opt);
                     }
                 }
             }
@@ -160,6 +176,21 @@ if (isStory || isBug) {
                     }
                 }
             }
+
+            //iterate the customers from this issue and add to parent collection
+            customersValue = issue.getCustomFieldValue(customersDef);
+            if (customersValue instanceof Collection) {
+                Collection<Option> coll = (Collection)customersValue;
+                for (Object obj : coll) {
+                    if (obj instanceof Option) {
+                        Option opt = (Option) obj;
+                        if (epicCustomers.add(opt)) {
+                           log.error("... epic to learn customers: " + opt.getValue());
+                           epicLearnedCustomers = true; //indicate we should update the parent epic; parent to learn an customers from this issue
+                        }
+                    }
+                }
+            }
             
             if (isStory) {
                //copy driver from epic if only if story has no driver
@@ -171,6 +202,17 @@ if (isStory || isBug) {
                     issue.setCustomFieldValue(driverDef, epicDriver); 
                     storyOrBugFieldChanged = true;
                 }
+
+                //copy qamanager from epic if only if story has no qamanager
+                Object qamgrDef = ComponentAccessor.getCustomFieldManager().getCustomFieldObjectByName("QA Managers");
+                Object qacfVal = issue.getCustomFieldValue(qamgrDef) as ArrayList <ApplicationUser>
+                if (!qacfVal) {
+                    Object epicQamgr = epic.getCustomFieldValue(qamgrDef) as ArrayList <ApplicationUser>;
+                    issue.setCustomFieldValue(qamgrDef, epicQamgr); 
+                    storyOrBugFieldChanged = true;
+                }
+
+
             }
 
             //copy fields from epic down to this issue        
@@ -224,7 +266,11 @@ if (isStory || isBug) {
             if (epicLearnedImpactAreas) {
                 epic.setCustomFieldValue(impactAreasDef, epicImpactAreas);
             }
-            if (epicLearnedDocumentation || epicLearnedImpactAreas) {
+            //update customers on parent Epic
+            if (epicLearnedCustomers) {
+                epic.setCustomFieldValue(customersDef, epicCustomers);
+            }
+            if (epicLearnedDocumentation || epicLearnedImpactAreas || epicLearnedCustomers) {
                //save the epic
                issueIndexingService.reIndex(issueManager.updateIssue(user, epic, EventDispatchOption.DO_NOT_DISPATCH, false));  
                log.error("... epic updated: " + epic.key);
@@ -276,9 +322,23 @@ if (isStory || isBug) {
         }
     }
 
+    //collect the Customers already on the Epic
+    Set<Option> epicCustomers = new HashSet<Option>();
+    Object customersValue = epic.getCustomFieldValue(customersDef);
+    if (customersValue instanceof Collection) {
+        Collection<Option> coll = (Collection)customersValue;
+        for (Object obj : coll) {
+            if (obj instanceof Option) {
+                Option opt = (Option) obj;
+                epicCustomers.add(opt);
+            }
+        }
+    }
+
     //get issues in Epic
     def epicLearnedDocumentation = false;
     def epicLearnedImpactAreas = false;
+    def epicLearnedCustomers = false;
     Collection<MutableIssue> issuesToUpdate = new ArrayList<MutableIssue>();
     IssueLinkManager issueLinkManager = ComponentAccessor.issueLinkManager
     issueLinkManager.getOutwardLinks(issue.id).each {issueLink ->
@@ -366,6 +426,21 @@ if (isStory || isBug) {
                 }
             }
 
+            //copy up the Customers from each issue in epic to Epic            
+            customersValue = linkedIssue.getCustomFieldValue(customersDef);
+            if (customersValue instanceof Collection) {
+                Collection<Option> coll = (Collection)customersValue;
+                for (Object obj : coll) {
+                    if (obj instanceof Option) {
+                        Option opt = (Option) obj;
+                        if (epicCustomers.add(opt)) {
+                               log.error("... epic to learn customers: " + opt.getValue());
+                               epicLearnedCustomers = true; //indicate we should update the parent epic; parent to customers from this issue
+                        }
+                    }
+                }
+            }
+
         }
     } //end issue link discovery loop
     
@@ -379,7 +454,11 @@ if (isStory || isBug) {
         log.error("... epic learned impact");
         epic.setCustomFieldValue(impactAreasDef, impactAreas);
     }
-    if (epicLearnedDocumentation || epicLearnedImpactAreas) {
+    if (epicLearnedCustomers) {
+        log.error("... epic learned customers");
+        epic.setCustomFieldValue(customersDef, epicCustomers);
+    }
+    if (epicLearnedDocumentation || epicLearnedImpactAreas || epicLearnedCustomers) {
         log.error("... saving epic");
         issuesToIndex.add(issueManager.updateIssue(user, epic, EventDispatchOption.DO_NOT_DISPATCH, false));              
     }
